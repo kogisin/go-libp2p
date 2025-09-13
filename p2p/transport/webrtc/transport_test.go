@@ -546,7 +546,7 @@ func TestTransportWebRTC_Deadline(t *testing.T) {
 		require.NoError(t, err)
 
 		stream.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
-		largeBuffer := make([]byte, 2*1024*1024)
+		largeBuffer := make([]byte, 20*1024*1024)
 		_, err = stream.Write(largeBuffer)
 		require.ErrorIs(t, err, os.ErrDeadlineExceeded)
 
@@ -799,7 +799,7 @@ func TestConnectionTimeoutOnListener(t *testing.T) {
 	proxy := quicproxy.Proxy{
 		Conn:       newUDPConnLocalhost(t),
 		ServerAddr: ln.Addr().(*net.UDPAddr),
-		DropPacket: func(quicproxy.Direction, []byte) bool { return drop.Load() },
+		DropPacket: func(_ quicproxy.Direction, _, _ net.Addr, _ []byte) bool { return drop.Load() },
 	}
 	require.NoError(t, proxy.Start())
 	defer proxy.Close()

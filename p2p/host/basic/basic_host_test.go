@@ -47,6 +47,7 @@ func TestHostSimple(t *testing.T) {
 	h1.Start()
 	h2, err := NewHost(swarmt.GenSwarm(t), nil)
 	require.NoError(t, err)
+
 	defer h2.Close()
 	h2.Start()
 
@@ -170,9 +171,9 @@ func TestProtocolHandlerEvents(t *testing.T) {
 		}
 	}
 
-	h.SetStreamHandler(protocol.TestingID, func(s network.Stream) {})
+	h.SetStreamHandler(protocol.TestingID, func(_ network.Stream) {})
 	assert([]protocol.ID{protocol.TestingID}, nil)
-	h.SetStreamHandler("foo", func(s network.Stream) {})
+	h.SetStreamHandler("foo", func(_ network.Stream) {})
 	assert([]protocol.ID{"foo"}, nil)
 	h.RemoveStreamHandler(protocol.TestingID)
 	assert(nil, []protocol.ID{protocol.TestingID})
@@ -180,7 +181,7 @@ func TestProtocolHandlerEvents(t *testing.T) {
 
 func TestHostAddrsFactory(t *testing.T) {
 	maddr := ma.StringCast("/ip4/1.2.3.4/tcp/1234")
-	addrsFactory := func(addrs []ma.Multiaddr) []ma.Multiaddr {
+	addrsFactory := func(_ []ma.Multiaddr) []ma.Multiaddr {
 		return []ma.Multiaddr{maddr}
 	}
 
@@ -211,6 +212,7 @@ func TestAllAddrs(t *testing.T) {
 	// no listen addrs
 	h, err := NewHost(swarmt.GenSwarm(t, swarmt.OptDialOnly), nil)
 	require.NoError(t, err)
+	h.Start()
 	defer h.Close()
 	require.Nil(t, h.AllAddrs())
 
@@ -240,7 +242,7 @@ func TestAllAddrsUnique(t *testing.T) {
 	}()
 	sendNewAddrs := make(chan struct{})
 	opts := HostOpts{
-		AddrsFactory: func(addrs []ma.Multiaddr) []ma.Multiaddr {
+		AddrsFactory: func(_ []ma.Multiaddr) []ma.Multiaddr {
 			select {
 			case <-sendNewAddrs:
 				return []ma.Multiaddr{
@@ -706,7 +708,7 @@ func TestHostAddrChangeDetection(t *testing.T) {
 
 	var lk sync.Mutex
 	currentAddrSet := 0
-	addrsFactory := func(addrs []ma.Multiaddr) []ma.Multiaddr {
+	addrsFactory := func(_ []ma.Multiaddr) []ma.Multiaddr {
 		lk.Lock()
 		defer lk.Unlock()
 		return addrSets[currentAddrSet]
@@ -735,7 +737,7 @@ func TestHostAddrChangeDetection(t *testing.T) {
 		lk.Lock()
 		currentAddrSet = i
 		lk.Unlock()
-		h.addressManager.triggerAddrsUpdate()
+		h.addressManager.updateAddrsSync()
 		evt := waitForAddrChangeEvent(ctx, sub, t)
 		if !updatedAddrEventsEqual(expectedEvents[i-1], evt) {
 			t.Errorf("change events not equal: \n\texpected: %v \n\tactual: %v", expectedEvents[i-1], evt)
@@ -865,14 +867,6 @@ func peerRecordFromEnvelope(t *testing.T, ev *record.Envelope) *peer.PeerRecord 
 		return nil
 	}
 	return peerRec
-}
-
-func TestNormalizeMultiaddr(t *testing.T) {
-	h1, err := NewHost(swarmt.GenSwarm(t), nil)
-	require.NoError(t, err)
-	defer h1.Close()
-
-	require.Equal(t, "/ip4/1.2.3.4/udp/9999/quic-v1/webtransport", h1.NormalizeMultiaddr(ma.StringCast("/ip4/1.2.3.4/udp/9999/quic-v1/webtransport/certhash/uEgNmb28")).String())
 }
 
 func TestTrimHostAddrList(t *testing.T) {

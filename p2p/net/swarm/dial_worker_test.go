@@ -487,7 +487,7 @@ func TestDialQueueNextBatch(t *testing.T) {
 				sort.Slice(batch, func(i, j int) bool { return batch[i].String() < batch[j].String() })
 				for i := 0; i < len(b); i++ {
 					if !b[i].Addr.Equal(batch[i]) {
-						log.Errorf("expected %s got %s", batch[i], b[i].Addr)
+						log.Error("expected address mismatch", "expected", batch[i], "got", b[i].Addr)
 					}
 				}
 			}
@@ -743,7 +743,7 @@ loop:
 // makeRanker takes a slice of timedDial objects and returns a DialRanker
 // which will trigger dials to addresses at the specified delays in the timedDials
 func makeRanker(tc []timedDial) network.DialRanker {
-	return func(addrs []ma.Multiaddr) []network.AddrDelay {
+	return func(_ []ma.Multiaddr) []network.AddrDelay {
 		res := make([]network.AddrDelay, len(tc))
 		for i := 0; i < len(tc); i++ {
 			res[i] = network.AddrDelay{Addr: tc[i].addr, Delay: tc[i].delay}
@@ -910,7 +910,7 @@ func TestDialWorkerLoopSchedulingProperty(t *testing.T) {
 		s1.dialRanker = makeRanker(tc.input)
 		err := checkDialWorkerLoopScheduling(t, s1, s2, tc)
 		if err != nil {
-			log.Error(err)
+			t.Log(err)
 		}
 		return err == nil
 	}
@@ -1104,7 +1104,7 @@ func TestDialWorkerLoopTCPConnUpgradeWait(t *testing.T) {
 	s1.Peerstore().AddAddrs(s2.LocalPeer(), []ma.Multiaddr{a1, a2}, peerstore.PermanentAddrTTL)
 
 	rankerCalled := make(chan struct{})
-	s1.dialRanker = func(addrs []ma.Multiaddr) []network.AddrDelay {
+	s1.dialRanker = func(_ []ma.Multiaddr) []network.AddrDelay {
 		defer close(rankerCalled)
 		return []network.AddrDelay{{Addr: a1, Delay: 0}, {Addr: a2, Delay: 100 * time.Millisecond}}
 	}

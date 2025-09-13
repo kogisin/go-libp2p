@@ -40,6 +40,10 @@ import (
 	libp2pwebrtc "github.com/libp2p/go-libp2p/p2p/transport/webrtc"
 	"github.com/libp2p/go-libp2p/p2p/transport/websocket"
 	webtransport "github.com/libp2p/go-libp2p/p2p/transport/webtransport"
+	"github.com/libp2p/go-yamux/v5"
+	"github.com/pion/webrtc/v4"
+	quicgo "github.com/quic-go/quic-go"
+	wtgo "github.com/quic-go/webtransport-go"
 	"go.uber.org/goleak"
 
 	ma "github.com/multiformats/go-multiaddr"
@@ -56,7 +60,7 @@ func TestNewHost(t *testing.T) {
 
 func TestTransportConstructor(t *testing.T) {
 	ctor := func(
-		h host.Host,
+		_ host.Host,
 		_ connmgr.ConnectionGater,
 		upgrader transport.Upgrader,
 	) transport.Transport {
@@ -157,7 +161,7 @@ func TestChainOptions(t *testing.T) {
 	newOpt := func() Option {
 		index := optcount
 		optcount++
-		return func(c *Config) error {
+		return func(_ *Config) error {
 			optsRun = append(optsRun, index)
 			return nil
 		}
@@ -321,7 +325,7 @@ func TestTransportCustomAddressWebTransport(t *testing.T) {
 		Transport(webtransport.New),
 		ListenAddrs(customAddr),
 		DisableRelay(),
-		AddrsFactory(func(multiaddrs []ma.Multiaddr) []ma.Multiaddr {
+		AddrsFactory(func(_ []ma.Multiaddr) []ma.Multiaddr {
 			return []ma.Multiaddr{customAddr}
 		}),
 	)
@@ -351,7 +355,7 @@ func TestTransportCustomAddressWebTransportDoesNotStall(t *testing.T) {
 		// Purposely not listening on the custom address so that we make sure the node doesn't stall if it fails to add a certhash to the multiaddr
 		// ListenAddrs(customAddr),
 		DisableRelay(),
-		AddrsFactory(func(multiaddrs []ma.Multiaddr) []ma.Multiaddr {
+		AddrsFactory(func(_ []ma.Multiaddr) []ma.Multiaddr {
 			return []ma.Multiaddr{customAddr}
 		}),
 	)
@@ -431,9 +435,9 @@ func TestMain(m *testing.M) {
 		// This will return eventually (5s timeout) but doesn't take a context.
 		goleak.IgnoreAnyFunction("github.com/koron/go-ssdp.Search"),
 		goleak.IgnoreAnyFunction("github.com/pion/sctp.(*Stream).SetReadDeadline.func1"),
-		// Logging & Stats
-		goleak.IgnoreTopFunction("github.com/ipfs/go-log/v2/writer.(*MirrorWriter).logRoutine"),
+		// Stats
 		goleak.IgnoreTopFunction("go.opencensus.io/stats/view.(*worker).start"),
+		// nat-pmp
 		goleak.IgnoreAnyFunction("github.com/jackpal/go-nat-pmp.(*Client).GetExternalAddress"),
 	)
 }
@@ -478,7 +482,7 @@ func TestDialCircuitAddrWithWrappedResourceManager(t *testing.T) {
 func TestHostAddrsFactoryAddsCerthashes(t *testing.T) {
 	addr := ma.StringCast("/ip4/1.2.3.4/udp/1/quic-v1/webtransport")
 	h, err := New(
-		AddrsFactory(func(m []ma.Multiaddr) []ma.Multiaddr {
+		AddrsFactory(func(_ []ma.Multiaddr) []ma.Multiaddr {
 			return []ma.Multiaddr{addr}
 		}),
 	)
@@ -786,7 +790,7 @@ func TestSharedTCPAddr(t *testing.T) {
 
 func TestCustomTCPDialer(t *testing.T) {
 	expectedErr := errors.New("custom dialer called, but not implemented")
-	customDialer := func(raddr ma.Multiaddr) (tcp.ContextDialer, error) {
+	customDialer := func(_ ma.Multiaddr) (tcp.ContextDialer, error) {
 		// Normally a user would implement this by returning a custom dialer
 		// Here, we just test that this is called.
 		return nil, expectedErr
@@ -812,6 +816,23 @@ func TestCustomTCPDialer(t *testing.T) {
 	require.ErrorContains(t, err, expectedErr.Error())
 }
 
+func TestBasicHostInterfaceAssertion(t *testing.T) {
+	mockRouter := &mockPeerRouting{}
+	h, err := New(
+		NoListenAddrs,
+		Routing(func(host.Host) (routing.PeerRouting, error) { return mockRouter, nil }),
+		DisableRelay(),
+	)
+	require.NoError(t, err)
+	defer h.Close()
+
+	require.NotNil(t, h)
+	require.NotEmpty(t, h.ID())
+
+	_, ok := h.(interface{ AllAddrs() []ma.Multiaddr })
+	require.True(t, ok)
+}
+
 func BenchmarkAllAddrs(b *testing.B) {
 	h, err := New()
 
@@ -823,5 +844,78 @@ func BenchmarkAllAddrs(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		addrsHost.AllAddrs()
+	}
+}
+
+func TestConnAs(t *testing.T) {
+	type testCase struct {
+		name       string
+		listenAddr string
+		testAs     func(t *testing.T, c network.Conn)
+	}
+
+	testCases := []testCase{
+		{
+			"QUIC",
+			"/ip4/0.0.0.0/udp/0/quic-v1",
+			func(t *testing.T, c network.Conn) {
+				var quicConn *quicgo.Conn
+				require.True(t, c.As(&quicConn))
+			},
+		},
+		{
+			"TCP+Yamux",
+			"/ip4/0.0.0.0/tcp/0",
+			func(t *testing.T, c network.Conn) {
+				var yamuxSession *yamux.Session
+				require.True(t, c.As(&yamuxSession))
+			},
+		},
+		{
+			"WebRTC",
+			"/ip4/0.0.0.0/udp/0/webrtc-direct",
+			func(t *testing.T, c network.Conn) {
+				var webrtcPC *webrtc.PeerConnection
+				require.True(t, c.As(&webrtcPC))
+			},
+		},
+		{
+			"WebTransport Session",
+			"/ip4/0.0.0.0/udp/0/quic-v1/webtransport",
+			func(t *testing.T, c network.Conn) {
+				var s *wtgo.Session
+				require.True(t, c.As(&s))
+			},
+		},
+		{
+			"WebTransport QUIC Conn",
+			"/ip4/0.0.0.0/udp/0/quic-v1/webtransport",
+			func(t *testing.T, c network.Conn) {
+				var quicConn *quicgo.Conn
+				require.True(t, c.As(&quicConn))
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			h1, err := New(ListenAddrStrings(
+				tc.listenAddr,
+			))
+			require.NoError(t, err)
+			defer h1.Close()
+			h2, err := New(ListenAddrStrings(
+				tc.listenAddr,
+			))
+			require.NoError(t, err)
+			defer h2.Close()
+			err = h1.Connect(context.Background(), peer.AddrInfo{
+				ID:    h2.ID(),
+				Addrs: h2.Addrs(),
+			})
+			require.NoError(t, err)
+			c := h1.Network().ConnsToPeer(h2.ID())[0]
+			tc.testAs(t, c)
+		})
 	}
 }
